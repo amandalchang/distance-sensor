@@ -1,0 +1,2 @@
+source /home/laurel/esp/esp-idf/examples/bluetooth/nimble/ble_proximity_sensor/proximity_sensor_cent/build/gdbinit/symbols
+source /home/laurel/esp/esp-idf/examples/bluetooth/nimble/ble_proximity_sensor/proximity_sensor_cent/build/gdbinit/connect
