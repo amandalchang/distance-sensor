@@ -1,2 +1,0 @@
-source /home/laurel/esp/esp-idf/examples/bluetooth/nimble/ble_proximity_sensor/proximity_sensor_prph/build/bootloader/gdbinit/symbols
-source /home/laurel/esp/esp-idf/examples/bluetooth/nimble/ble_proximity_sensor/proximity_sensor_prph/build/bootloader/gdbinit/connect
