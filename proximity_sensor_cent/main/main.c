@@ -6,6 +6,7 @@
 
 #include "esp_log.h"
 #include "nvs_flash.h"
+#include "driver/gpio.h"
 /* BLE */
 #include "nimble/nimble_port.h"
 #include "nimble/nimble_port_freertos.h"
@@ -14,6 +15,9 @@
 #include "console/console.h"
 #include "services/gap/ble_svc_gap.h"
 #include "ble_prox_cent.h"
+
+#define BUTTON_PIN 34
+#define LED 12
 
 static const char *tag = "NimBLE_PROX_CENT";
 static uint8_t link_supervision_timeout;
@@ -712,6 +716,59 @@ void ble_prox_cent_host_task(void *param)
     nimble_port_freertos_deinit();
 }
 
+int8_t get_rssi(void) {
+  int8_t rssi = 0;
+
+  for (int i = 0; i <= MYNEWT_VAL(BLE_MAX_CONNECTIONS); i++) {
+    if (conn_peer[i].calc_path_loss) {
+      ble_gap_conn_rssi(i, &rssi);
+    }
+  }
+  return rssi;
+}
+
+void calibration_task(void *pvParameters) {
+    gpio_reset_pin(BUTTON_PIN);
+    gpio_reset_pin(LED);
+    gpio_set_direction(BUTTON_PIN, GPIO_MODE_INPUT);
+    gpio_set_direction(LED, GPIO_MODE_OUTPUT);
+
+    int8_t temp_cali_location_arr[12];
+    float cali_location_mean_arr[10];
+
+    while (1) {
+    int i = 0;
+    float sum = 0.0f;
+
+    while (i < 10) {
+      gpio_set_level(LED, 1); // light on indicate move cali location
+      // on btn click
+      if (gpio_get_level(BUTTON_PIN)) {
+        gpio_set_level(LED, 0); // light off indicate calibration started
+        sum = 0.0f;
+        for (int j = 0; j < 12; j++) {
+          // get rssi value
+          temp_cali_location_arr[j] = get_rssi();
+        //   temp_cali_location_arr[j] = 2.0f;
+          MODLOG_DFLT(INFO, "Current RSSI = %d", temp_cali_location_arr[j]);
+          sum += temp_cali_location_arr[j];
+          vTaskDelay(pdMS_TO_TICKS(500)); // Delay 0.5 sec
+        }
+        if (sum != 0.0f) {
+          cali_location_mean_arr[i] = sum / 12.0f;
+          ;
+        } else {
+          cali_location_mean_arr[i] = -1.0f;
+        }
+        MODLOG_DFLT(INFO, "Calibration mean[%d] = %.2f", i,
+                    cali_location_mean_arr[i]);
+        i++;
+      }
+    }
+  }
+  vTaskDelete(NULL);
+}
+
 static void
 ble_prox_cent_init(void)
 {
@@ -720,6 +777,8 @@ ble_prox_cent_init(void)
 
     /* Task for alerting when link is lost */
     xTaskCreate(ble_prox_cent_link_loss_task, "ble_prox_cent_link_loss_task", 4096, NULL, 10, NULL);
+
+    xTaskCreate(calibration_task, "calibration_task", 4096, NULL, 10, NULL);
     return;
 }
 
