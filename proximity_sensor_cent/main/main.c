@@ -4,9 +4,11 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+#include "calculation.h"
 #include "esp_log.h"
 #include "nvs_flash.h"
 #include "driver/gpio.h"
+#include <math.h>
 /* BLE */
 #include "nimble/nimble_port.h"
 #include "nimble/nimble_port_freertos.h"
@@ -16,7 +18,7 @@
 #include "services/gap/ble_svc_gap.h"
 #include "ble_prox_cent.h"
 
-#define BUTTON_PIN 34
+#define BUTTON_PIN 25
 #define LED 12
 
 static const char *tag = "NimBLE_PROX_CENT";
@@ -32,6 +34,11 @@ static struct ble_prox_cent_link_lost_peer disconn_peer[MYNEWT_VAL(BLE_MAX_CONNE
  */
 static int8_t high_threshold = -70;
 static int8_t low_threshold = -100;
+
+// for converting rssi to distance with logreg
+float m; // slope of linear regression
+float b; // y intercept of linear regression
+bool CALIB_COMPLETE = 0;
 
 void ble_store_config_init(void);
 static void ble_prox_cent_scan(void);
@@ -224,64 +231,6 @@ ble_prox_cent_scan(void)
  * advertisement.  The function returns a positive result if the device
  * advertises connectability and support for the Health Thermometer service.
  */
-
-#if CONFIG_EXAMPLE_EXTENDED_ADV
-static int
-ext_ble_prox_cent_should_connect(const struct ble_gap_ext_disc_desc *disc)
-{
-    int offset = 0;
-    int ad_struct_len = 0;
-    uint8_t test_addr[6];
-    uint32_t peer_addr[6];
-
-    memset(peer_addr, 0x0, sizeof peer_addr);
-
-    if (disc->legacy_event_type != BLE_HCI_ADV_RPT_EVTYPE_ADV_IND &&
-            disc->legacy_event_type != BLE_HCI_ADV_RPT_EVTYPE_DIR_IND) {
-        return 0;
-    }
-    if (strlen(CONFIG_EXAMPLE_PEER_ADDR) && (strncmp(CONFIG_EXAMPLE_PEER_ADDR, "ADDR_ANY", strlen    ("ADDR_ANY")) != 0)) {
-        ESP_LOGI(tag, "Peer address from menuconfig: %s", CONFIG_EXAMPLE_PEER_ADDR);
-        /* Convert string to address */
-        sscanf(CONFIG_EXAMPLE_PEER_ADDR, "%lx:%lx:%lx:%lx:%lx:%lx",
-               &peer_addr[5], &peer_addr[4], &peer_addr[3],
-               &peer_addr[2], &peer_addr[1], &peer_addr[0]);
-
-	/* Conversion */
-        for (int i=0; i<6; i++) {
-            test_addr[i] = (uint8_t )peer_addr[i];
-        }
-
-        if (memcmp(test_addr, disc->addr.val, sizeof(disc->addr.val)) != 0) {
-            return 0;
-        }
-    }
-
-    /* The device has to advertise support for Proximity sensor (link loss)
-    * service (0x1803).
-    */
-    do {
-        ad_struct_len = disc->data[offset];
-
-        if (!ad_struct_len) {
-            break;
-        }
-
-        /* Search if Proximity Sensor (Link loss) UUID is advertised */
-        if (disc->data[offset] == 0x03 && disc->data[offset + 1] == 0x03) {
-            if ( disc->data[offset + 2] == 0x18 && disc->data[offset + 3] == 0x03 ) {
-                return 1;
-            }
-        }
-
-        offset += ad_struct_len + 1;
-
-    } while ( offset < disc->length_data );
-
-    return 0;
-}
-#else
-
 static int
 ble_prox_cent_should_connect(const struct ble_gap_disc_desc *disc)
 {
@@ -333,7 +282,6 @@ ble_prox_cent_should_connect(const struct ble_gap_disc_desc *disc)
 
     return 0;
 }
-#endif
 
 /**
  * Connects to the sender of the specified advertisement of it looks
@@ -348,15 +296,9 @@ ble_prox_cent_connect_if_interesting(void *disc)
     ble_addr_t *addr;
 
     /* Don't do anything if we don't care about this advertiser. */
-#if CONFIG_EXAMPLE_EXTENDED_ADV
-    if (!ext_ble_prox_cent_should_connect((struct ble_gap_ext_disc_desc *)disc)) {
+if (!ble_prox_cent_should_connect((struct ble_gap_disc_desc *)disc)) {
         return;
     }
-#else
-    if (!ble_prox_cent_should_connect((struct ble_gap_disc_desc *)disc)) {
-        return;
-    }
-#endif
 
 #if !(MYNEWT_VAL(BLE_HOST_ALLOW_CONNECT_WITH_SCAN))
     /* Scanning must be stopped before a connection can be initiated. */
@@ -562,22 +504,22 @@ ble_prox_cent_gap_event(struct ble_gap_event *event, void *arg)
 #endif
         return 0;
 
-    case BLE_GAP_EVENT_CACHE_ASSOC:
-#if MYNEWT_VAL(BLE_GATT_CACHING_ASSOC_ENABLE)
-          /* Cache association result for this connection */
-          MODLOG_DFLT(INFO, "cache association; conn_handle=%d status=%d cache_state=%s\n",
-                      event->cache_assoc.conn_handle,
-                      event->cache_assoc.status,
-                      (event->cache_assoc.cache_state == 0) ? "INVALID" : "LOADED");
-          /* Perform service discovery */
-          rc = peer_disc_all(event->connect.conn_handle,
-                             blecent_on_disc_complete, NULL);
-          if(rc != 0) {
-                MODLOG_DFLT(ERROR, "Failed to discover services; rc=%d\n", rc);
-                return 0;
-          }
-#endif
-          return 0;
+//     case BLE_GAP_EVENT_CACHE_ASSOC:
+// #if MYNEWT_VAL(BLE_GATT_CACHING_ASSOC_ENABLE)
+//           /* Cache association result for this connection */
+//           MODLOG_DFLT(INFO, "cache association; conn_handle=%d status=%d cache_state=%s\n",
+//                       event->cache_assoc.conn_handle,
+//                       event->cache_assoc.status,
+//                       (event->cache_assoc.cache_state == 0) ? "INVALID" : "LOADED");
+//           /* Perform service discovery */
+//           rc = peer_disc_all(event->connect.conn_handle,
+//                              blecent_on_disc_complete, NULL);
+//           if(rc != 0) {
+//                 MODLOG_DFLT(ERROR, "Failed to discover services; rc=%d\n", rc);
+//                 return 0;
+//           }
+// #endif
+        //   return 0;
 
     case BLE_GAP_EVENT_NOTIFY_RX:
         /* Peer sent us a notification or indication. */
@@ -637,21 +579,28 @@ ble_prox_cent_path_loss_task(void *pvParameters)
     int8_t rssi;
     int rc;
     int path_loss;
+    float dist;
 
     while (1) {
         for (int i = 0; i <= MYNEWT_VAL(BLE_MAX_CONNECTIONS); i++) {
             if (conn_peer[i].calc_path_loss) {
                 MODLOG_DFLT(INFO, "Connection handle : %d", i);
                 rc = ble_gap_conn_rssi(i, &rssi);
-                if (rc == 0) {
+                if (CALIB_COMPLETE && rc == 0) {
+                    MODLOG_DFLT(INFO, "RSSI = %d", rssi);
+                    MODLOG_DFLT(INFO,"Current Distance = %d", rssi_to_dist(rssi, m, b));
+                    }
+                else if (rc == 0) {
                     MODLOG_DFLT(INFO, "Current RSSI = %d", rssi);
+                    // dist = pow(10, (rssi + 47.469) / -21.237);
+                    // MODLOG_DFLT(INFO, "Current Distance = %f", dist);
                 } else {
                     MODLOG_DFLT(ERROR, "Failed to get current RSSI");
                 }
 
                 path_loss = tx_pwr_lvl - rssi;
-                MODLOG_DFLT(INFO, "path loss = %d pwr lvl = %d rssi = %d",
-                            path_loss, tx_pwr_lvl, rssi);
+                // MODLOG_DFLT(INFO, "path loss = %d pwr lvl = %d rssi = %d",
+                //             path_loss, tx_pwr_lvl, rssi);
 
                 if ((conn_peer[i].val_handle != 0) &&
                         (path_loss > high_threshold || path_loss < low_threshold)) {
@@ -733,20 +682,22 @@ void calibration_task(void *pvParameters) {
     gpio_set_direction(BUTTON_PIN, GPIO_MODE_INPUT);
     gpio_set_direction(LED, GPIO_MODE_OUTPUT);
 
-    int8_t temp_cali_location_arr[12];
-    float cali_location_mean_arr[10];
+    int array_size = 5;
+    int averaging_array_size = 20;
 
-    while (1) {
+    int8_t temp_cali_location_arr[averaging_array_size];
+    float rssi_array[array_size];
     int i = 0;
     float sum = 0.0f;
 
-    while (i < 10) {
+    while (i < array_size) {
       gpio_set_level(LED, 1); // light on indicate move cali location
+      vTaskDelay(1);  // yields to Idle task and resets watchdog
       // on btn click
       if (gpio_get_level(BUTTON_PIN)) {
         gpio_set_level(LED, 0); // light off indicate calibration started
         sum = 0.0f;
-        for (int j = 0; j < 12; j++) {
+        for (int j = 0; j < averaging_array_size; j++) {
           // get rssi value
           temp_cali_location_arr[j] = get_rssi();
         //   temp_cali_location_arr[j] = 2.0f;
@@ -755,17 +706,19 @@ void calibration_task(void *pvParameters) {
           vTaskDelay(pdMS_TO_TICKS(500)); // Delay 0.5 sec
         }
         if (sum != 0.0f) {
-          cali_location_mean_arr[i] = sum / 12.0f;
+          rssi_array[i] = sum / averaging_array_size;
           ;
         } else {
-          cali_location_mean_arr[i] = -1.0f;
+        // check if there aren't any values in rssi
+          rssi_array[i] = -1.0f;
         }
         MODLOG_DFLT(INFO, "Calibration mean[%d] = %.2f", i,
-                    cali_location_mean_arr[i]);
+                    rssi_array[i]);
         i++;
       }
     }
-  }
+    CALIB_COMPLETE = true;
+    rssi_logreg_to_params(array_size, rssi_array, &m, &b);
   vTaskDelete(NULL);
 }
 
