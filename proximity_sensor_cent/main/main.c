@@ -18,7 +18,7 @@
 #include "services/gap/ble_svc_gap.h"
 #include "ble_prox_cent.h"
 
-#define BUTTON_PIN 25
+#define BUTTON_PIN 13
 #define LED 12
 
 static const char *tag = "NimBLE_PROX_CENT";
@@ -27,18 +27,49 @@ static int8_t tx_pwr_lvl;
 static struct ble_prox_cent_conn_peer conn_peer[MYNEWT_VAL(BLE_MAX_CONNECTIONS) + 1];
 static struct ble_prox_cent_link_lost_peer disconn_peer[MYNEWT_VAL(BLE_MAX_CONNECTIONS) + 1];
 
-/* Note: Path loss is calculated using formula : threshold - RSSI value
- *       by default threshold is kept -128 as per the spec
- *       high_threshold and low_threshold are hardcoded after testing and noting
- *       RSSI values when distance between devices are less and more.
- */
-static int8_t high_threshold = -70;
-static int8_t low_threshold = -100;
-
 // for converting rssi to distance with logreg
 float m; // slope of linear regression
 float b; // y intercept of linear regression
 bool CALIB_COMPLETE = 0;
+
+// Pin defs
+#define GPIO_STCP (gpio_num_t) 27 // ST_CP (Storage Register Clock / Latch)
+#define GPIO_SHCP (gpio_num_t) 26 // SH_CP (Shift Register Clock)
+#define GPIO_DS   (gpio_num_t) 25 // DS (Data Input)
+
+// hex representations of the numbers 0 through 9
+const uint8_t datArray[] = {
+    0x3f, 0x06, 0x5b, 0x4f, 0x66, 0x6d, 0x7d, 0x07, 0x7f, 0x6f
+};
+
+void shift_out_msb(gpio_num_t dataPin, gpio_num_t clockPin, uint8_t val) {
+    for (int i = 0; i < 8; i++) {
+        // Determine the most significant bit (MSB)
+        uint8_t bit = (val & (0x80 >> i)); 
+
+        // 1. Write the bit to the Data Pin
+        gpio_set_level(dataPin, bit ? 1 : 0);
+
+        // 2. Pulse the Clock Pin (SH_CP) to shift the data
+        gpio_set_level(clockPin, 1);
+        gpio_set_level(clockPin, 0);
+    }
+}
+
+// Function to set up the GPIO pins
+void setup_gpio() {
+    gpio_set_direction(BUTTON_PIN, GPIO_MODE_INPUT);
+    gpio_set_direction(LED, GPIO_MODE_OUTPUT);
+
+    gpio_set_direction(GPIO_STCP, GPIO_MODE_OUTPUT);
+    gpio_set_direction(GPIO_SHCP, GPIO_MODE_OUTPUT);
+    gpio_set_direction(GPIO_DS,   GPIO_MODE_OUTPUT);
+    
+    // Set initial levels
+    gpio_set_level(GPIO_STCP, 0);
+    gpio_set_level(GPIO_SHCP, 0);
+    gpio_set_level(GPIO_DS, 0);
+}
 
 void ble_store_config_init(void);
 static void ble_prox_cent_scan(void);
@@ -403,22 +434,6 @@ ble_prox_cent_gap_event(struct ble_gap_event *event, void *arg)
                 }
             }
 
-#if CONFIG_EXAMPLE_ENCRYPTION
-            /** Initiate security - It will perform
-             * Pairing (Exchange keys)
-             * Bonding (Store keys)
-             * Encryption (Enable encryption)
-             * Will invoke event BLE_GAP_EVENT_ENC_CHANGE
-             **/
-            rc = ble_gap_security_initiate(event->connect.conn_handle);
-            if (rc != 0) {
-                MODLOG_DFLT(INFO, "Security could not be initiated, rc = %d\n", rc);
-                return ble_gap_terminate(event->connect.conn_handle,
-                                         BLE_ERR_REM_USER_CONN_TERM);
-            } else {
-                MODLOG_DFLT(INFO, "Connection secured\n");
-            }
-#else
 #if MYNEWT_VAL(BLE_GATT_CACHING_ASSOC_ENABLE)
             rc =  ble_gattc_cache_assoc(desc.peer_id_addr);
             if (rc != 0) {
@@ -434,7 +449,6 @@ ble_prox_cent_gap_event(struct ble_gap_event *event, void *arg)
                 return 0;
             }
 #endif // BLE_GATT_CACHING_ASSOC_ENABLE
-#endif
         } else {
             /* Connection attempt failed; resume scanning. */
             MODLOG_DFLT(ERROR, "Error: Connection failed; status=%d\n",
@@ -578,13 +592,11 @@ ble_prox_cent_path_loss_task(void *pvParameters)
 {
     int8_t rssi;
     int rc;
-    int path_loss;
-    float dist;
 
     while (1) {
         for (int i = 0; i <= MYNEWT_VAL(BLE_MAX_CONNECTIONS); i++) {
             if (conn_peer[i].calc_path_loss) {
-                MODLOG_DFLT(INFO, "Connection handle : %d", i);
+                // MODLOG_DFLT(INFO, "Connection handle : %d", i);
                 rc = ble_gap_conn_rssi(i, &rssi);
                 if (CALIB_COMPLETE && rc == 0) {
                     MODLOG_DFLT(INFO, "RSSI = %d", rssi);
@@ -596,27 +608,6 @@ ble_prox_cent_path_loss_task(void *pvParameters)
                     // MODLOG_DFLT(INFO, "Current Distance = %f", dist);
                 } else {
                     MODLOG_DFLT(ERROR, "Failed to get current RSSI");
-                }
-
-                path_loss = tx_pwr_lvl - rssi;
-                // MODLOG_DFLT(INFO, "path loss = %d pwr lvl = %d rssi = %d",
-                //             path_loss, tx_pwr_lvl, rssi);
-
-                if ((conn_peer[i].val_handle != 0) &&
-                        (path_loss > high_threshold || path_loss < low_threshold)) {
-
-                    if (path_loss < low_threshold) {
-                        path_loss = 0;
-                    }
-
-                    rc = ble_gattc_write_no_rsp_flat(i, conn_peer[i].val_handle,
-                                                     &path_loss, sizeof(path_loss));
-                    if (rc != 0) {
-                        MODLOG_DFLT(ERROR, "Error: Failed to write characteristic; rc=%d\n",
-                                    rc);
-                    } else {
-                        MODLOG_DFLT(INFO, "Write to alert level characteristis done");
-                    }
                 }
             }
         }
@@ -691,35 +682,42 @@ void calibration_task(void *pvParameters) {
     float sum = 0.0f;
 
     while (i < array_size) {
-      gpio_set_level(LED, 1); // light on indicate move cali location
-      vTaskDelay(1);  // yields to Idle task and resets watchdog
+                // display round number on the 7 seg display 
+        gpio_set_level(GPIO_STCP, 0); 
+        shift_out_msb(GPIO_DS, GPIO_SHCP, datArray[i+1]);
+        gpio_set_level(GPIO_STCP, 1); 
+        gpio_set_level(LED, 1); // light on indicate move cali location
+        vTaskDelay(1);  // yields to Idle task and resets watchdog
       // on btn click
-      if (gpio_get_level(BUTTON_PIN)) {
-        gpio_set_level(LED, 0); // light off indicate calibration started
-        sum = 0.0f;
-        for (int j = 0; j < averaging_array_size; j++) {
-          // get rssi value
-          temp_cali_location_arr[j] = get_rssi();
-        //   temp_cali_location_arr[j] = 2.0f;
-          MODLOG_DFLT(INFO, "Current RSSI = %d", temp_cali_location_arr[j]);
-          sum += temp_cali_location_arr[j];
-          vTaskDelay(pdMS_TO_TICKS(500)); // Delay 0.5 sec
-        }
-        if (sum != 0.0f) {
-          rssi_array[i] = sum / averaging_array_size;
-          ;
-        } else {
-        // check if there aren't any values in rssi
-          rssi_array[i] = -1.0f;
-        }
-        MODLOG_DFLT(INFO, "Calibration mean[%d] = %.2f", i,
-                    rssi_array[i]);
-        i++;
+        if (gpio_get_level(BUTTON_PIN)) {
+            gpio_set_level(LED, 0); // light off indicate calibration started
+            sum = 0.0f;
+            for (int j = 0; j < averaging_array_size; j++) {
+            // get rssi value
+            temp_cali_location_arr[j] = get_rssi();
+            //   temp_cali_location_arr[j] = 2.0f;
+            MODLOG_DFLT(INFO, "Current RSSI = %d", temp_cali_location_arr[j]);
+            sum += temp_cali_location_arr[j];
+            vTaskDelay(pdMS_TO_TICKS(500)); // Delay 0.5 sec
+            }
+            if (sum != 0.0f) {
+            rssi_array[i] = sum / averaging_array_size;
+            ;
+            } else {
+            // check if there aren't any values in rssi
+            rssi_array[i] = -1.0f;
+            }
+            MODLOG_DFLT(INFO, "Calibration mean[%d] = %.2f", i,
+                        rssi_array[i]); 
+            i++;
       }
     }
     CALIB_COMPLETE = true;
     rssi_logreg_to_params(array_size, rssi_array, &m, &b);
-  vTaskDelete(NULL);
+    gpio_set_level(GPIO_STCP, 0); 
+    shift_out_msb(GPIO_DS, GPIO_SHCP, 0x00); // turn off when done
+    gpio_set_level(GPIO_STCP, 1); 
+    vTaskDelete(NULL);
 }
 
 static void
@@ -754,6 +752,7 @@ app_main(void)
     }
 
     /* Initialize a task to keep checking path loss of the link */
+    setup_gpio();
     ble_prox_cent_init();
 
     for (int i = 0; i <= MYNEWT_VAL(BLE_MAX_CONNECTIONS); i++) {
@@ -767,18 +766,8 @@ app_main(void)
     ble_hs_cfg.store_status_cb = ble_store_util_status_rr;
 
     /* Initialize data structures to track connected peers. */
-#if MYNEWT_VAL(BLE_INCL_SVC_DISCOVERY) || MYNEWT_VAL(BLE_GATT_CACHING_INCLUDE_SERVICES)
-    rc = peer_init(MYNEWT_VAL(BLE_MAX_CONNECTIONS), 64, 64, 64, 64);
-    assert(rc == 0);
-#else
     rc = peer_init(MYNEWT_VAL(BLE_MAX_CONNECTIONS), 64, 64, 64);
     assert(rc == 0);
-#endif
-#if CONFIG_BT_NIMBLE_GAP_SERVICE
-    /* Set the default device name. */
-    rc = ble_svc_gap_device_name_set("nimble-prox-cent");
-    assert(rc == 0);
-#endif
 
     /* XXX Need to have template for store */
     ble_store_config_init();
