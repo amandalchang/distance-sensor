@@ -20,6 +20,17 @@
 
 #define BUTTON_PIN 13
 #define LED 12
+#define CALIBRATED
+
+#ifdef CALIBRATED
+// manually measured approximate rssi to distance values
+float m = -12;
+float b = -35;
+#else
+// for converting rssi to distance with logreg
+float m; // slope of linear regression
+float b; // y intercept of linear regression
+#endif
 
 static const char *tag = "NimBLE_PROX_CENT";
 static uint8_t link_supervision_timeout;
@@ -27,10 +38,7 @@ static int8_t tx_pwr_lvl;
 static struct ble_prox_cent_conn_peer conn_peer[MYNEWT_VAL(BLE_MAX_CONNECTIONS) + 1];
 static struct ble_prox_cent_link_lost_peer disconn_peer[MYNEWT_VAL(BLE_MAX_CONNECTIONS) + 1];
 
-// for converting rssi to distance with logreg
-float m; // slope of linear regression
-float b; // y intercept of linear regression
-bool CALIB_COMPLETE = 0;
+
 
 // Pin defs
 #define GPIO_STCP (gpio_num_t) 27 // ST_CP (Storage Register Clock / Latch)
@@ -587,33 +595,28 @@ ble_prox_cent_gap_event(struct ble_gap_event *event, void *arg)
     }
 }
 
-void
-ble_prox_cent_path_loss_task(void *pvParameters)
-{
-    int8_t rssi;
-    int rc;
+// void
+// ble_prox_cent_path_loss_task(void *pvParameters)
+// {
+//     int8_t rssi;
+//     int rc;
+//     float dist;
 
-    while (1) {
-        for (int i = 0; i <= MYNEWT_VAL(BLE_MAX_CONNECTIONS); i++) {
-            if (conn_peer[i].calc_path_loss) {
-                // MODLOG_DFLT(INFO, "Connection handle : %d", i);
-                rc = ble_gap_conn_rssi(i, &rssi);
-                if (CALIB_COMPLETE && rc == 0) {
-                    MODLOG_DFLT(INFO, "RSSI = %d", rssi);
-                    MODLOG_DFLT(INFO,"Current Distance = %d", rssi_to_dist(rssi, m, b));
-                    }
-                else if (rc == 0) {
-                    MODLOG_DFLT(INFO, "Current RSSI = %d", rssi);
-                    // dist = pow(10, (rssi + 47.469) / -21.237);
-                    // MODLOG_DFLT(INFO, "Current Distance = %f", dist);
-                } else {
-                    MODLOG_DFLT(ERROR, "Failed to get current RSSI");
-                }
-            }
-        }
-        vTaskDelay(1000 / portTICK_PERIOD_MS);
-    }
-}
+//     while (1) {
+//         for (int i = 0; i <= MYNEWT_VAL(BLE_MAX_CONNECTIONS); i++) {
+//             if (conn_peer[i].calc_path_loss) {
+//                 // MODLOG_DFLT(INFO, "Connection handle : %d", i);
+//                 rc = ble_gap_conn_rssi(i, &rssi);
+//                 if (rc == 0) {
+//                     MODLOG_DFLT(INFO, "Current RSSI = %d", rssi);
+//                 } else {
+//                     MODLOG_DFLT(ERROR, "Failed to get current RSSI");
+//                 }
+//             }
+//         }
+//         vTaskDelay(1000 / portTICK_PERIOD_MS);
+//     }
+// }
 
 void
 ble_prox_cent_link_loss_task(void *pvParameters)
@@ -667,6 +670,39 @@ int8_t get_rssi(void) {
   return rssi;
 }
 
+void distance_conversion_task(void *pvParameters) {
+    int collected_rssi_size = 10;
+    MODLOG_DFLT(INFO, "Distance Conversion Beginning");
+
+    int8_t collected_rssi[collected_rssi_size];
+    float dist = 0;
+    float sum = 0.0f;
+    while (true) {
+        // display 9 on the 7 seg display 
+        gpio_set_level(GPIO_STCP, 0); 
+        shift_out_msb(GPIO_DS, GPIO_SHCP, 0x39); // show C when calibrated
+        gpio_set_level(GPIO_STCP, 1); 
+        vTaskDelay(1);  // yields to Idle task and resets watchdog
+        // on btn click
+        sum = 0.0f;
+        for (int j = 0; j < collected_rssi_size; j++) {
+        // get rssi value
+        collected_rssi[j] = get_rssi();
+        sum += collected_rssi[j];
+        vTaskDelay(pdMS_TO_TICKS(200)); // Delay 0.25 sec
+        }
+        if (sum != 0.0f) {
+        MODLOG_DFLT(INFO, "%f, %f, %f", (sum/collected_rssi_size), m, b);
+        // calibrated every 10 inches
+        dist = rssi_to_dist((sum/collected_rssi_size), m, b);
+        MODLOG_DFLT(INFO, "Distance (in) = %.2f", dist);
+        } else {
+            // check if there aren't any values in rssi
+            MODLOG_DFLT(DEBUG, "No RSSI values detected");
+            }
+        }
+}
+
 void calibration_task(void *pvParameters) {
     gpio_reset_pin(BUTTON_PIN);
     gpio_reset_pin(LED);
@@ -674,7 +710,7 @@ void calibration_task(void *pvParameters) {
     gpio_set_direction(LED, GPIO_MODE_OUTPUT);
 
     int array_size = 5;
-    int averaging_array_size = 20;
+    int averaging_array_size = 30;
 
     int8_t temp_cali_location_arr[averaging_array_size];
     float rssi_array[array_size];
@@ -698,11 +734,10 @@ void calibration_task(void *pvParameters) {
             //   temp_cali_location_arr[j] = 2.0f;
             MODLOG_DFLT(INFO, "Current RSSI = %d", temp_cali_location_arr[j]);
             sum += temp_cali_location_arr[j];
-            vTaskDelay(pdMS_TO_TICKS(500)); // Delay 0.5 sec
+                vTaskDelay(pdMS_TO_TICKS(250)); // Delay 0.25 sec
             }
             if (sum != 0.0f) {
             rssi_array[i] = sum / averaging_array_size;
-            ;
             } else {
             // check if there aren't any values in rssi
             rssi_array[i] = -1.0f;
@@ -712,24 +747,25 @@ void calibration_task(void *pvParameters) {
             i++;
       }
     }
-    CALIB_COMPLETE = true;
     rssi_logreg_to_params(array_size, rssi_array, &m, &b);
-    gpio_set_level(GPIO_STCP, 0); 
-    shift_out_msb(GPIO_DS, GPIO_SHCP, 0x00); // turn off when done
-    gpio_set_level(GPIO_STCP, 1); 
+    xTaskCreate(distance_conversion_task, "distance_conversion_task", 4096, NULL, 10, NULL);
     vTaskDelete(NULL);
 }
 
 static void
 ble_prox_cent_init(void)
 {
-    /* Task for calculating path loss */
-    xTaskCreate(ble_prox_cent_path_loss_task, "ble_prox_cent_path_loss_task", 4096, NULL, 10, NULL);
+    // /* Task for calculating path loss */
+    // xTaskCreate(ble_prox_cent_path_loss_task, "ble_prox_cent_path_loss_task", 4096, NULL, 10, NULL);
 
     /* Task for alerting when link is lost */
     xTaskCreate(ble_prox_cent_link_loss_task, "ble_prox_cent_link_loss_task", 4096, NULL, 10, NULL);
 
-    xTaskCreate(calibration_task, "calibration_task", 4096, NULL, 10, NULL);
+    #ifdef CALIBRATED
+        xTaskCreate(distance_conversion_task, "distance_conversion_task", 4096, NULL, 10, NULL);
+    #else
+        xTaskCreate(calibration_task, "calibration_task", 4096, NULL, 10, NULL);
+    #endif
     return;
 }
 
