@@ -20,7 +20,6 @@
 
 #define BUTTON_PIN 13
 #define LED 12
-#define CALIBRATED
 
 #ifdef CALIBRATED
 // manually measured approximate rssi to distance values
@@ -660,14 +659,20 @@ void ble_prox_cent_host_task(void *param)
 }
 
 int8_t get_rssi(void) {
-  int8_t rssi = 0;
-
-  for (int i = 0; i <= MYNEWT_VAL(BLE_MAX_CONNECTIONS); i++) {
-    if (conn_peer[i].calc_path_loss) {
-      ble_gap_conn_rssi(i, &rssi);
+    int8_t rssi = 0;
+    int rc;
+    for (int i = 0; i <= MYNEWT_VAL(BLE_MAX_CONNECTIONS); i++) {
+        // connection active check
+        if (conn_peer[i].calc_path_loss) {
+            // on success ble_gap_conn_rssi is 0
+            rc = ble_gap_conn_rssi(i, &rssi);
+            if (rc == 0) {
+                return rssi; 
+            }
+        }
     }
-  }
-  return rssi;
+    // -128 serving as an error value
+    return -128;
 }
 
 void distance_conversion_task(void *pvParameters) {
