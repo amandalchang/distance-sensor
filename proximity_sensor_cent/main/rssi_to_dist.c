@@ -1,3 +1,5 @@
+#include "calculation.h"
+#include "ble.h"
 #include "esp_log.h"
 #include "driver/gpio.h"
 #include "freertos/FreeRTOS.h"
@@ -25,10 +27,6 @@ const int RSSI_CALIB_TASK_DELAY_MS = 250;
 const uint8_t datArray[] = {
     0x3f, 0x06, 0x5b, 0x4f, 0x66, 0x6d, 0x7d, 0x07, 0x7f, 0x6f
 };
-
-extern int8_t  get_rssi(void);
-extern float   rssi_to_dist(float *dist, const float rssi, const float m, const float b);
-extern void    rssi_logreg_to_params(const int num_dists, float *rssi_array, float *m, float *b);
 
 static void shift_out_msb(gpio_num_t dataPin, gpio_num_t clockPin, uint8_t val) {
     for (int i = 0; i < 8; i++) {
