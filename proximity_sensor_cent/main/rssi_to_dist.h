@@ -7,7 +7,7 @@
 
 
 float calibration_task(void);
-float distance_conversion_task(void);
-void rssi_logreg_to_params(const int num_dists, const float rssi_array[], float* m, float* b);
+float distance_conversion_task(void *pvParameters);
+void rssi_logreg_to_params(const int num_dists, const float rssi_array[], float *m, float *b);
 
 #endif

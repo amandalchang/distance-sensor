@@ -17,54 +17,55 @@
 #include "console/console.h"
 #include "services/gap/ble_svc_gap.h"
 #include "ble_prox_cent.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
-#define BUTTON_PIN 13
-#define LED 12
-
-#ifdef CALIBRATED
-// manually measured approximate rssi to distance values
-float m = -12;
-float b = -35;
-#else
+// #define CALIBRATED
 // for converting rssi to distance with logreg
-float m; // slope of linear regression
-float b; // y intercept of linear regression
-#endif
+float m; // slope of log-linear regression
+float b; // y intercept of log-linear regression
+const int DIST_MEASURE_COUNT = 10;
+const int DIST_TASK_DELAY_MS = 200;
 
-static const char *tag = "NimBLE_PROX_CENT";
-static uint8_t link_supervision_timeout;
-static int8_t tx_pwr_lvl;
-static struct ble_prox_cent_conn_peer conn_peer[MYNEWT_VAL(BLE_MAX_CONNECTIONS) + 1];
-static struct ble_prox_cent_link_lost_peer disconn_peer[MYNEWT_VAL(BLE_MAX_CONNECTIONS) + 1];
-
-
+const int NUM_CALIB_ROUNDS = 5; // 7 seg display only works with up to 9 rounds
+const int RSSI_CALIB_MEASURE_COUNT = 30;
+const int RSSI_CALIB_TASK_DELAY_MS = 250;
 
 // Pin defs
-#define GPIO_STCP (gpio_num_t) 27 // ST_CP (Storage Register Clock / Latch)
-#define GPIO_SHCP (gpio_num_t) 26 // SH_CP (Shift Register Clock)
-#define GPIO_DS   (gpio_num_t) 25 // DS (Data Input)
+#define LED         (gpio_num_t) 12
+#define BUTTON_PIN  (gpio_num_t) 13
+#define GPIO_STCP   (gpio_num_t) 27 // ST_CP (Storage Register Clock / Latch)
+#define GPIO_SHCP   (gpio_num_t) 26 // SH_CP (Shift Register Clock)
+#define GPIO_DS     (gpio_num_t) 25 // DS (Data Input)
 
 // hex representations of the numbers 0 through 9
 const uint8_t datArray[] = {
     0x3f, 0x06, 0x5b, 0x4f, 0x66, 0x6d, 0x7d, 0x07, 0x7f, 0x6f
 };
 
-void shift_out_msb(gpio_num_t dataPin, gpio_num_t clockPin, uint8_t val) {
+extern float   rssi_to_dist(float *dist, const float rssi, const float m, const float b);
+extern void    rssi_logreg_to_params(const int num_dists, const float *rssi_array, float *m, float *b);
+
+static void shift_out_msb(gpio_num_t dataPin, gpio_num_t clockPin, uint8_t val) {
     for (int i = 0; i < 8; i++) {
-        // Determine the most significant bit (MSB)
         uint8_t bit = (val & (0x80 >> i)); 
-
-        // 1. Write the bit to the Data Pin
         gpio_set_level(dataPin, bit ? 1 : 0);
-
-        // 2. Pulse the Clock Pin (SH_CP) to shift the data
         gpio_set_level(clockPin, 1);
         gpio_set_level(clockPin, 0);
     }
 }
 
+static void show_seven_segment(uint8_t digit_hex) {
+    gpio_set_level(GPIO_STCP, 0); 
+    shift_out_msb(GPIO_DS, GPIO_SHCP, digit_hex);
+    gpio_set_level(GPIO_STCP, 1); 
+    vTaskDelay(1); // yields to Idle task and resets watchdog
+}
+
 // Function to set up the GPIO pins
-void setup_gpio() {
+static void setup_gpio() {
+    gpio_reset_pin(BUTTON_PIN);
+    gpio_reset_pin(LED);    
     gpio_set_direction(BUTTON_PIN, GPIO_MODE_INPUT);
     gpio_set_direction(LED, GPIO_MODE_OUTPUT);
 
@@ -77,6 +78,12 @@ void setup_gpio() {
     gpio_set_level(GPIO_SHCP, 0);
     gpio_set_level(GPIO_DS, 0);
 }
+
+static const char *tag = "NimBLE_PROX_CENT";
+static uint8_t link_supervision_timeout;
+static int8_t tx_pwr_lvl;
+static struct ble_prox_cent_conn_peer conn_peer[MYNEWT_VAL(BLE_MAX_CONNECTIONS) + 1];
+static struct ble_prox_cent_link_lost_peer disconn_peer[MYNEWT_VAL(BLE_MAX_CONNECTIONS) + 1];
 
 void ble_store_config_init(void);
 static void ble_prox_cent_scan(void);
@@ -594,29 +601,6 @@ ble_prox_cent_gap_event(struct ble_gap_event *event, void *arg)
     }
 }
 
-// void
-// ble_prox_cent_path_loss_task(void *pvParameters)
-// {
-//     int8_t rssi;
-//     int rc;
-//     float dist;
-
-//     while (1) {
-//         for (int i = 0; i <= MYNEWT_VAL(BLE_MAX_CONNECTIONS); i++) {
-//             if (conn_peer[i].calc_path_loss) {
-//                 // MODLOG_DFLT(INFO, "Connection handle : %d", i);
-//                 rc = ble_gap_conn_rssi(i, &rssi);
-//                 if (rc == 0) {
-//                     MODLOG_DFLT(INFO, "Current RSSI = %d", rssi);
-//                 } else {
-//                     MODLOG_DFLT(ERROR, "Failed to get current RSSI");
-//                 }
-//             }
-//         }
-//         vTaskDelay(1000 / portTICK_PERIOD_MS);
-//     }
-// }
-
 void
 ble_prox_cent_link_loss_task(void *pvParameters)
 {
@@ -675,102 +659,109 @@ int8_t get_rssi(void) {
     return -128;
 }
 
-void distance_conversion_task(void *pvParameters) {
-    int collected_rssi_size = 10;
-    MODLOG_DFLT(INFO, "Distance Conversion Beginning");
-
-    int8_t collected_rssi[collected_rssi_size];
-    float dist = 0;
+static int get_average_rssi(float *avg_rssi, const int measure_count, const int task_delay_ms) {
     float sum = 0.0f;
-    while (true) {
-        // display 9 on the 7 seg display 
-        gpio_set_level(GPIO_STCP, 0); 
-        shift_out_msb(GPIO_DS, GPIO_SHCP, 0x39); // show C when calibrated
-        gpio_set_level(GPIO_STCP, 1); 
-        vTaskDelay(1);  // yields to Idle task and resets watchdog
-        // on btn click
-        sum = 0.0f;
-        for (int j = 0; j < collected_rssi_size; j++) {
-        // get rssi value
-        collected_rssi[j] = get_rssi();
-        sum += collected_rssi[j];
-        vTaskDelay(pdMS_TO_TICKS(200)); // Delay 0.25 sec
+    int8_t rssi_val; 
+    int valid_count = 0; 
+
+    for (int i = 0; i < measure_count; i++) {
+        rssi_val = get_rssi();
+
+        // if not get_rssi error condition of -128
+        if (rssi_val != -128) { // valid 
+            ESP_LOGI("AVG_RSSI", "Current RSSI: %d", rssi_val);
+            sum += (float)rssi_val; // adding ints to a float
+            valid_count++;
         }
-        if (sum != 0.0f) {
-        MODLOG_DFLT(INFO, "%f, %f, %f", (sum/collected_rssi_size), m, b);
-        // calibrated every 10 inches
-        dist = rssi_to_dist((sum/collected_rssi_size), m, b);
-        MODLOG_DFLT(INFO, "Distance (in) = %.2f", dist);
-        } else {
-            // check if there aren't any values in rssi
-            MODLOG_DFLT(DEBUG, "No RSSI values detected");
-            }
-        }
+        vTaskDelay(pdMS_TO_TICKS(task_delay_ms));
+    }
+    
+    if (valid_count == 0) {
+        ESP_LOGW("AVG_RSSI", "No valid RSSI values");
+        return -128; // error val
+    } else {
+        // divide only by the number of valid measurements
+        *avg_rssi = sum / (float)valid_count; 
+        return 0;
+    }
 }
 
-void calibration_task(void *pvParameters) {
-    gpio_reset_pin(BUTTON_PIN);
-    gpio_reset_pin(LED);
-    gpio_set_direction(BUTTON_PIN, GPIO_MODE_INPUT);
-    gpio_set_direction(LED, GPIO_MODE_OUTPUT);
-
-    int array_size = 5;
-    int averaging_array_size = 30;
-
-    int8_t temp_cali_location_arr[averaging_array_size];
-    float rssi_array[array_size];
-    int i = 0;
-    float sum = 0.0f;
-
-    while (i < array_size) {
-                // display round number on the 7 seg display 
-        gpio_set_level(GPIO_STCP, 0); 
-        shift_out_msb(GPIO_DS, GPIO_SHCP, datArray[i+1]);
-        gpio_set_level(GPIO_STCP, 1); 
-        gpio_set_level(LED, 1); // light on indicate move cali location
-        vTaskDelay(1);  // yields to Idle task and resets watchdog
-      // on btn click
-        if (gpio_get_level(BUTTON_PIN)) {
-            gpio_set_level(LED, 0); // light off indicate calibration started
-            sum = 0.0f;
-            for (int j = 0; j < averaging_array_size; j++) {
-            // get rssi value
-            temp_cali_location_arr[j] = get_rssi();
-            //   temp_cali_location_arr[j] = 2.0f;
-            MODLOG_DFLT(INFO, "Current RSSI = %d", temp_cali_location_arr[j]);
-            sum += temp_cali_location_arr[j];
-                vTaskDelay(pdMS_TO_TICKS(250)); // Delay 0.25 sec
-            }
-            if (sum != 0.0f) {
-            rssi_array[i] = sum / averaging_array_size;
+static void distance_averaging_task(void) {
+    float avg_rssi;
+    float dist;
+    int rc; // return code
+    int dist_rc; // distance rc
+    ESP_LOGI("CONVERSION", "RSSI to Distance beginning");
+    while (1) {
+        show_seven_segment(0x39); // 'C' indicator
+        // task delay in get_average prevents this loop from running too fast
+        rc = get_average_rssi(&avg_rssi, DIST_MEASURE_COUNT, DIST_TASK_DELAY_MS);
+        if (rc != -128) {
+            dist_rc = rssi_to_dist(&dist, avg_rssi, m, b);
+            if (!dist_rc) {
+                ESP_LOGI("CONVERSION", "RSSI Avg: %.2f  Distance (in): %.2f", avg_rssi, dist);
             } else {
-            // check if there aren't any values in rssi
-            rssi_array[i] = -1.0f;
+                ESP_LOGW("CONVERSION", "Invalid Distance Conversion: M is 0");
             }
-            MODLOG_DFLT(INFO, "Calibration mean[%d] = %.2f", i,
-                        rssi_array[i]); 
-            i++;
+            
+        }
+    }
+}
+
+static void calibrate(void) {
+    ESP_LOGI("CALIBRATION", "Calibrate started");
+    float rssi_array[NUM_CALIB_ROUNDS];
+    float avg_rssi;
+    int rc;
+    int i = 0;
+
+    while (i < NUM_CALIB_ROUNDS) {
+            gpio_set_level(LED, 1); // light on indicate move cali location
+            if (NUM_CALIB_ROUNDS <= 10) {
+                show_seven_segment(datArray[i]); // shows round number indexed from 0
+            } else {
+                // if rounds are > 10 light up entire 7 seg display
+                show_seven_segment(0xFF);
+            }
+            // on btn click
+        if (gpio_get_level(BUTTON_PIN)) {
+            ESP_LOGI("CALIBRATION", "Next distance measurement cycle triggered");
+            gpio_set_level(LED, 0); // light off indicate calibration started
+            // Wait for button release
+            while (gpio_get_level(BUTTON_PIN)) {
+                vTaskDelay(pdMS_TO_TICKS(10));
+            }
+            rc = get_average_rssi(&avg_rssi,RSSI_CALIB_MEASURE_COUNT, RSSI_CALIB_TASK_DELAY_MS);
+            if (rc != -128) {
+                rssi_array[i] = avg_rssi;
+                ESP_LOGI("CALIBRATION", "Calibration mean[%d] = %.2f", i, rssi_array[i]);
+                i++;
+            } else {
+                ESP_LOGW("CALIBRATION", "No valid rssi values found, restarting round");
+            }
       }
     }
-    rssi_logreg_to_params(array_size, rssi_array, &m, &b);
-    xTaskCreate(distance_conversion_task, "distance_conversion_task", 4096, NULL, 10, NULL);
-    vTaskDelete(NULL);
+    rssi_logreg_to_params(NUM_CALIB_ROUNDS, rssi_array, &m, &b);
+}
+
+void distance_conversion_task(void *pvParameters) {
+    setup_gpio();
+    #ifndef CALIBRATED // if it's not calibrated calibrate
+        calibrate();
+    #else
+        m = -12;
+        b = -35;
+    #endif
+    distance_averaging_task();
 }
 
 static void
 ble_prox_cent_init(void)
 {
-    // /* Task for calculating path loss */
-    // xTaskCreate(ble_prox_cent_path_loss_task, "ble_prox_cent_path_loss_task", 4096, NULL, 10, NULL);
-
     /* Task for alerting when link is lost */
     xTaskCreate(ble_prox_cent_link_loss_task, "ble_prox_cent_link_loss_task", 4096, NULL, 10, NULL);
 
-    #ifdef CALIBRATED
-        xTaskCreate(distance_conversion_task, "distance_conversion_task", 4096, NULL, 10, NULL);
-    #else
-        xTaskCreate(calibration_task, "calibration_task", 4096, NULL, 10, NULL);
-    #endif
+    xTaskCreate(distance_conversion_task, "distance_conversion_task", 4096, NULL, 11, NULL);
     return;
 }
 
@@ -793,7 +784,6 @@ app_main(void)
     }
 
     /* Initialize a task to keep checking path loss of the link */
-    setup_gpio();
     ble_prox_cent_init();
 
     for (int i = 0; i <= MYNEWT_VAL(BLE_MAX_CONNECTIONS); i++) {

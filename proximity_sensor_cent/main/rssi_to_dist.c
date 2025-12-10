@@ -3,6 +3,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
+#define CALIBRATED
 // for converting rssi to distance with logreg
 float m; // slope of log-linear regression
 float b; // y intercept of log-linear regression
@@ -26,8 +27,8 @@ const uint8_t datArray[] = {
 };
 
 extern int8_t  get_rssi(void);
-extern float   rssi_to_dist(float rssi_avg, float m, float b);
-extern void    rssi_logreg_to_params(int n, float *rssi_vals, float *m, float *b);
+extern float   rssi_to_dist(float *dist, const float rssi, const float m, const float b);
+extern void    rssi_logreg_to_params(const int num_dists, float *rssi_array, float *m, float *b);
 
 static void shift_out_msb(gpio_num_t dataPin, gpio_num_t clockPin, uint8_t val) {
     for (int i = 0; i < 8; i++) {
@@ -45,11 +46,12 @@ static void show_seven_segment(uint8_t digit_hex) {
     vTaskDelay(1); // yields to Idle task and resets watchdog
 }
 
-// Function to set up the GPIO pins
+// GPIO setup
 static void setup_gpio() {
+    gpio_reset_pin(BUTTON_PIN);
+    gpio_reset_pin(LED);    
     gpio_set_direction(BUTTON_PIN, GPIO_MODE_INPUT);
     gpio_set_direction(LED, GPIO_MODE_OUTPUT);
-    gpio_reset_pin(BUTTON_PIN);
 
     gpio_set_direction(GPIO_STCP, GPIO_MODE_OUTPUT);
     gpio_set_direction(GPIO_SHCP, GPIO_MODE_OUTPUT);
@@ -59,10 +61,9 @@ static void setup_gpio() {
     gpio_set_level(GPIO_STCP, 0);
     gpio_set_level(GPIO_SHCP, 0);
     gpio_set_level(GPIO_DS, 0);
-    gpio_set_level(LED, 0);
 }
 
-static float get_average_rssi(const int measure_count, const int task_delay_ms) {
+static int get_average_rssi(float *avg_rssi, const int measure_count, const int task_delay_ms) {
     float sum = 0.0f;
     int8_t rssi_val; 
     int valid_count = 0; 
@@ -81,28 +82,41 @@ static float get_average_rssi(const int measure_count, const int task_delay_ms) 
     
     if (valid_count == 0) {
         ESP_LOGW("AVG_RSSI", "No valid RSSI values");
-        return -128.0f; // error val
+        return -128; // error val
     } else {
-        return sum / (float)valid_count; // divide only by the number of valid measurements
+        // divide only by the number of valid measurements
+        *avg_rssi = sum / (float)valid_count; 
+        return 0;
     }
 }
 
 static void distance_averaging_task(void) {
     float avg_rssi;
+    float dist;
+    int rc; // return code
+    int dist_rc; // distance rc
     ESP_LOGI("CONVERSION", "RSSI to Distance beginning");
     while (1) {
         show_seven_segment(0x39); // 'C' indicator
         // task delay in get_average prevents this loop from running too fast
-        avg_rssi = get_average_rssi(DIST_MEASURE_COUNT, DIST_TASK_DELAY_MS);
-        if (avg_rssi != -128.0f) {
-            float dist = rssi_to_dist(avg_rssi, m, b);
-            ESP_LOGI("CONVERSION", "RSSI Avg: %.2f  Distance (in): %.2f", avg_rssi, dist);
+        rc = get_average_rssi(&avg_rssi, DIST_MEASURE_COUNT, DIST_TASK_DELAY_MS);
+        if (rc != -128) {
+            dist_rc = rssi_to_dist(&dist, avg_rssi, m, b);
+            if (!dist_rc) {
+                ESP_LOGI("CONVERSION", "RSSI Avg: %.2f  Distance (in): %.2f", avg_rssi, dist);
+            } else {
+                ESP_LOGW("CONVERSION", "Invalid Distance Conversion: M is 0");
+            }
+            
         }
     }
 }
 
-static void calibration_task(void) {
+static void calibrate(void) {
+    ESP_LOGI("CALIBRATION", "Calibrate started");
     float rssi_array[NUM_CALIB_ROUNDS];
+    float avg_rssi;
+    int rc;
     int i = 0;
 
     while (i < NUM_CALIB_ROUNDS) {
@@ -115,13 +129,14 @@ static void calibration_task(void) {
             }
             // on btn click
         if (gpio_get_level(BUTTON_PIN)) {
+            ESP_LOGI("CALIBRATION", "Next distance measurement cycle triggered");
             gpio_set_level(LED, 0); // light off indicate calibration started
             // Wait for button release
             while (gpio_get_level(BUTTON_PIN)) {
                 vTaskDelay(pdMS_TO_TICKS(10));
             }
-            float avg_rssi = get_average_rssi(RSSI_CALIB_MEASURE_COUNT, RSSI_CALIB_TASK_DELAY_MS);
-            if (avg_rssi != -128.0f) {
+            rc = get_average_rssi(&avg_rssi,RSSI_CALIB_MEASURE_COUNT, RSSI_CALIB_TASK_DELAY_MS);
+            if (rc != -128) {
                 rssi_array[i] = avg_rssi;
                 ESP_LOGI("CALIBRATION", "Calibration mean[%d] = %.2f", i, rssi_array[i]);
                 i++;
@@ -136,7 +151,7 @@ static void calibration_task(void) {
 void distance_conversion_task(void *pvParameters) {
     setup_gpio();
     #ifndef CALIBRATED // if it's not calibrated calibrate
-        calibration_task();
+        calibrate();
     #else
         m = -12;
         b = -35;
@@ -144,7 +159,7 @@ void distance_conversion_task(void *pvParameters) {
     distance_averaging_task();
 }
 
-void
-app_main(void) {
-    xTaskCreate(distance_conversion_task, "distance_conversion_task", 4096, NULL, 10, NULL);
-}
+// void
+// app_main(void) {
+//     xTaskCreate(distance_conversion_task, "distance_conversion_task", 4096, NULL, 10, NULL);
+// }
