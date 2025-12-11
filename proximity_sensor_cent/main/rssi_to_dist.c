@@ -157,7 +157,3 @@ void distance_conversion_task(void *pvParameters) {
     distance_averaging_task();
 }
 
-// void
-// app_main(void) {
-//     xTaskCreate(distance_conversion_task, "distance_conversion_task", 4096, NULL, 10, NULL);
-// }
