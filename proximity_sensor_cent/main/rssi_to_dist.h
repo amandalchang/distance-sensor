@@ -5,9 +5,14 @@
 #ifndef RSSI_TO_DIST
 #define RSSI_TO_DIST
 
-
-float calibration_task(void);
-float distance_conversion_task(void *pvParameters);
-void rssi_logreg_to_params(const int num_dists, const float rssi_array[], float *m, float *b);
+/**
+ * Task for distance-measurement params and starting distance
+ * averaging task.
+ * 
+ * Initializes GPIO pins for hardware, starts task for calibration if not
+ * calibration is needed, then begins distance averaging task.
+ * 
+ */
+void distance_conversion_task(void *pvParameters);
 
 #endif

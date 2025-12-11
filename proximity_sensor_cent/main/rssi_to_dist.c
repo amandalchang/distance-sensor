@@ -1,3 +1,9 @@
+/**
+ * Handles RSSI value to distance conversion and
+ * displays those values to the monitor.
+ */
+
+
 #include "calculation.h"
 #include "ble.h"
 #include "esp_log.h"

@@ -1,6 +1,8 @@
-//
-// Convert cleaned RSSI value to distance in meters using logarithmic regression
-//
+/**
+ * Convert cleaned RSSI value to distance in meters using 
+ * logarithmic regression.
+ */
+
 #include "calculation.h"
 #include <math.h>
 #include <stdio.h>
@@ -45,7 +47,7 @@ int linreg(int num_dists, const float x[], const float rssi_array[], float* m, f
 }
 
 // validatation of logarithmic regression model
-float rssi_to_dist(float* dist, const float rssi, const float m, const float b) {
+int rssi_to_dist(float* dist, const float rssi, const float m, const float b) {
     if (m != 0) {
         *dist = pow(10, (rssi - b) / m);
         return 0;
@@ -60,11 +62,11 @@ void rssi_logreg_to_params(const int num_dists, const float rssi_array[], float*
     // 10 inches between each calibration unit, eventual distance in inches
     for (int i = 0; i < num_dists; i+=1) {
         log_distances[i] = log10(i+(i+1)*10);
-        printf("log %i is %.3f\n", i+1, log_distances[i]);
-        printf("for the %ith element, rssi = %f\n", (i+1), rssi_array[i]);
+        // printf("log %i is %.3f\n", i+1, log_distances[i]);
+        // printf("for the %ith element, rssi = %f\n", (i+1), rssi_array[i]);
     };
     linreg(num_dists, log_distances, rssi_array, m, b, &r);
-    printf("rssi = %.3f + %.3f * log_dists\nr = %.3f\n", *b, *m, r);
+    // printf("rssi = %.3f + %.3f * log_dists\nr = %.3f\n", *b, *m, r);
 }
 
 

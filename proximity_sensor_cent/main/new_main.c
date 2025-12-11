@@ -1,6 +1,6 @@
-/*
+/** 
  * Runs BLE tasks and conversion tasks
- */
+*/
 
 #include "nimble/nimble_port_freertos.h"
 #include "ble.h"
