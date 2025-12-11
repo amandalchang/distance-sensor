@@ -9,16 +9,16 @@
 #include <stdio.h>
 
 // avoids using pow(x, 2) which is less clean and slower
-static inline float sqr(float d) { return d * d; }
+static inline float sqr(float digit) { return digit * digit; }
 
 // Does linear regression using least squares
-int linreg(int num_dists, const float x[], const float rssi_array[], float* m,
-           float* b, float* r) {
-  float sumx = 0.0;
-  float sumx2 = 0.0;
-  float sumxy = 0.0;
-  float sumy = 0.0;
-  float sumy2 = 0.0;
+int linreg(int num_dists, const float x[], const float rssi_array[],
+           float* m_val, float* b_val, float* r_val) {
+  float sumx = 0.0F;
+  float sumx2 = 0.0F;
+  float sumxy = 0.0F;
+  float sumy = 0.0F;
+  float sumy2 = 0.0F;
 
   for (int i = 0; i < num_dists; i++) {
     sumx += x[i];
@@ -28,48 +28,52 @@ int linreg(int num_dists, const float x[], const float rssi_array[], float* m,
     sumy2 += sqr(rssi_array[i]);
   }
 
-  float denom = (num_dists * sumx2 - sqr(sumx));
-  if (denom == 0.0) {
-    *m = 0.0;
-    *b = 0.0;
-    if (r) *r = 0.0;
+  float denom = (((float)num_dists * sumx2) - sqr(sumx));
+  if (denom == 0.0F) {
+    *m_val = 0.0F;
+    *b_val = 0.0F;
+    if (r_val) {
+      *r_val = 0.0F;
+    }
     return 1;
   }
 
-  *m = (num_dists * sumxy - sumx * sumy) / denom;
-  *b = (sumy * sumx2 - sumx * sumxy) / denom;
+  *m_val = ((float)num_dists * sumxy - sumx * sumy) / denom;
+  *b_val = (sumy * sumx2 - sumx * sumxy) / denom;
 
-  if (r != NULL) {
-    *r =
-        (sumxy - sumx * sumy / num_dists) /
-        sqrt((sumx2 - sqr(sumx) / num_dists) * (sumy2 - sqr(sumy) / num_dists));
+  if (r_val != NULL) {
+    *r_val = (sumxy - sumx * sumy / (float)num_dists) /
+             sqrtf((sumx2 - sqr(sumx) / (float)num_dists) *
+                   (sumy2 - sqr(sumy) / (float)num_dists));
   }
 
   return 0;
 }
 
 // validatation of logarithmic regression model
-int rssi_to_dist(float* dist, const float rssi, const float m, const float b) {
-  if (m != 0) {
-    *dist = pow(10, (rssi - b) / m);
+int rssi_to_dist(float* dist, const float rssi, const float m_val,
+                 const float b_val) {
+  if (m_val != 0) {
+    *dist = (float)pow(10, (rssi - b_val) / m_val);
     return 0;
   }
   return 1;
 }
 
 void rssi_logreg_to_params(const int num_dists, const float rssi_array[],
-                           float* m, float* b) {
+                           float* m_val, float* b_val) {
   float log_distances[num_dists];  // storage for log distances
-  float r = 0;
+  float r_val = 0;
 
   // 10 inches between each calibration unit, eventual distance in inches
   for (int i = 0; i < num_dists; i += 1) {
-    log_distances[i] = log10(i + (i + 1) * 10);
+    log_distances[i] = (float)log10(i + ((i + 1) * 10));
     // printf("log %i is %.3f\n", i+1, log_distances[i]);
     // printf("for the %ith element, rssi = %f\n", (i+1), rssi_array[i]);
   };
-  linreg(num_dists, log_distances, rssi_array, m, b, &r);
-  // printf("rssi = %.3f + %.3f * log_dists\nr = %.3f\n", *b, *m, r);
+  linreg(num_dists, log_distances, rssi_array, m_val, b_val, &r_val);
+  // printf("rssi = %.3f + %.3f * log_dists\nr = %.3f\n", *b_val, *m_val,
+  // r_val);
 }
 
 // int main(void) {
