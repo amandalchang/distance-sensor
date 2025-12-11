@@ -10,7 +10,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
-#define CALIBRATED
+// #define CALIBRATED
 // for converting rssi to distance with logreg
 float m;  // slope of log-linear regression
 float b;  // y intercept of log-linear regression
