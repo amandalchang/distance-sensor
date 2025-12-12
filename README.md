@@ -45,19 +45,11 @@ cd distance-sensor
 
 ### Compile & Run with ESP-IDF
 
-Set up ESP environment and variables via terminal:
-
-```
-cd ~/esp/esp-idf
-source export.sh
-```
-
 Navigate to /distance-sensor/proximity_sensor_cent, and build and flash your **receiver board**:
 
 ```
-idf.py set-target esp32
-idf.py build
-idf.py flash monitor
+make compile
+make flash
 ```
 
 To flash your **transmitter board**, navigate to /distance-sensor/proximity_sensor_prph. Run the same lines as the receiver board above.
