@@ -6,11 +6,11 @@
 #define CALCULATION_H
 
 /**
- * Compute the distance in meters related to RSSI value.
+ * Compute the distance in inches related to RSSI value.
  *
  * Given an averaged rssi value, and the slope and the y-intercept
  * from calibration stage, use linear regression to find the distance
- * in meters that correspond to the RSSI value. Store distance to address
+ * in inches that correspond to the RSSI value. Store distance to address
  * of dist param.
  *
  * @param dist The pointer to a float variable.
