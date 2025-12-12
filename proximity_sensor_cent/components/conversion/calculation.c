@@ -54,7 +54,7 @@ int linreg(int num_dists, const float x[], const float rssi_array[],
 int rssi_to_dist(float* dist, const float rssi, const float m_val,
                  const float b_val) {
   if (m_val != 0) {
-    *dist = (float)pow(10, (rssi - b_val) / m_val);
+    *dist = powf(10, (rssi - b_val) / m_val);
     return 0;
   }
   return 1;
@@ -75,27 +75,3 @@ void rssi_logreg_to_params(const int num_dists, const float rssi_array[],
   // printf("rssi = %.3f + %.3f * log_dists\nr = %.3f\n", *b_val, *m_val,
   // r_val);
 }
-
-// int main(void) {
-//     const int num_dists = 10; // number of measurements
-//     float m = 0; // stores slope
-//     float b = 0; // stores y-intercept
-
-//     const float rssi_array[10] = {-46.766666, -51.566666, -53.033333,
-//     -55.799999, -54.233334, -56.099998, -55.933334, -60.833332, -60.833332,
-//     -60.066666}; rssi_logreg_to_params(num_dists, rssi_array, &m, &b);
-//     printf("m = %f, b = %f\n", m, b);
-
-//     // convert rssi to distances using calculated equation
-//     float distance;
-//     for (int i = 0; i < num_dists; i+=1) {
-//         distance = rssi_to_dist(rssi_array[i], m, b);
-//         printf("The original distance was %i and the calculated is %0.4f\n",
-//         i+(i+1)*10, distance);
-//     };
-
-//     // save calculated logarithmic parameters
-//     FILE *f = fopen("rssi_params.txt", "w");
-//     fprintf(f, "%0.3f %0.3f\n", m, b);
-//     fclose(f);
-// }

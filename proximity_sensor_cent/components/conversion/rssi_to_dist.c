@@ -10,7 +10,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
-// #define CALIBRATED
+#define CALIBRATED
 // for converting rssi to distance with logreg
 float m;  // slope of log-linear regression
 float b;  // y intercept of log-linear regression
@@ -21,12 +21,14 @@ const int NUM_CALIB_ROUNDS = 5;  // 7 seg display only works with up to 9 rounds
 const int RSSI_CALIB_MEASURE_COUNT = 30;
 const int RSSI_CALIB_TASK_DELAY_MS = 250;
 
+const int ERROR_VAL = -128;
+
 // Pin defs
-#define LED (gpio_num_t)12
-#define BUTTON_PIN (gpio_num_t)13
-#define GPIO_STCP (gpio_num_t)27  // ST_CP (Storage Register Clock / Latch)
-#define GPIO_SHCP (gpio_num_t)26  // SH_CP (Shift Register Clock)
-#define GPIO_DS (gpio_num_t)25    // DS (Data Input)
+const gpio_num_t LED = 12;
+const gpio_num_t BUTTON_PIN = 13;
+const gpio_num_t GPIO_STCP = 27;  // ST_CP (Storage Register Clock / Latch)
+const gpio_num_t GPIO_SHCP = 26;  // SH_CP (Shift Register Clock)
+const gpio_num_t GPIO_DS = 25;    // DS (Data Input)
 
 // hex representations of the numbers 0 through 9
 const uint8_t datArray[] = {0x3f, 0x06, 0x5b, 0x4f, 0x66,
@@ -75,8 +77,8 @@ static int get_average_rssi(float* avg_rssi, const int measure_count,
   for (int i = 0; i < measure_count; i++) {
     rssi_val = get_rssi();
 
-    // if not get_rssi error condition of -128
-    if (rssi_val != -128) {  // valid
+    // if not get_rssi error condition of ERROR_VAL
+    if (rssi_val != ERROR_VAL) {  // valid
       ESP_LOGI("AVG_RSSI", "Current RSSI: %d", rssi_val);
       sum += (float)rssi_val;  // adding ints to a float
       valid_count++;
@@ -86,7 +88,7 @@ static int get_average_rssi(float* avg_rssi, const int measure_count,
 
   if (valid_count == 0) {
     ESP_LOGW("AVG_RSSI", "No valid RSSI values");
-    return -128;  // error val
+    return ERROR_VAL;  // error val
   } else {
     // divide only by the number of valid measurements
     *avg_rssi = sum / (float)valid_count;
@@ -104,7 +106,7 @@ static void distance_averaging_task(void) {
     show_seven_segment(0x39);  // 'C' indicator
     // task delay in get_average prevents this loop from running too fast
     rc = get_average_rssi(&avg_rssi, DIST_MEASURE_COUNT, DIST_TASK_DELAY_MS);
-    if (rc != -128) {
+    if (rc != ERROR_VAL) {
       dist_rc = rssi_to_dist(&dist, avg_rssi, m, b);
       if (!dist_rc) {
         ESP_LOGI("CONVERSION", "RSSI Avg: %.2f  Distance (in): %.2f", avg_rssi,
@@ -141,7 +143,7 @@ static void calibrate(void) {
       }
       rc = get_average_rssi(&avg_rssi, RSSI_CALIB_MEASURE_COUNT,
                             RSSI_CALIB_TASK_DELAY_MS);
-      if (rc != -128) {
+      if (rc != ERROR_VAL) {
         rssi_array[i] = avg_rssi;
         ESP_LOGI("CALIBRATION", "Calibration mean[%d] = %.2f", i,
                  rssi_array[i]);

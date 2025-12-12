@@ -1,8 +1,8 @@
 ---
 Checks: >
   *, -llvmlibc-restrict-system-libc-headers, -llvm-header-guard, -altera*,
-  -cert-*-cpp,
-HeaderFilterRegex: "."
+  -cert-*-cpp, -hicpp-signed-bitwise
+HeaderFilterRegex: "*"
 FormatStyle: google
 CheckOptions:
   - key: readability-function-cognitive-complexity.IgnoreMacros
