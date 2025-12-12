@@ -10,7 +10,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
-#define CALIBRATED
+// #define CALIBRATED
 // for converting rssi to distance with logreg
 float m;  // slope of log-linear regression
 float b;  // y intercept of log-linear regression
@@ -79,7 +79,7 @@ static int get_average_rssi(float* avg_rssi, const int measure_count,
 
     // if not get_rssi error condition of ERROR_VAL
     if (rssi_val != ERROR_VAL) {  // valid
-      ESP_LOGI("AVG_RSSI", "Current RSSI: %d", rssi_val);
+      ESP_LOGI("AVG_RSSI", "Current RSSI: %d", (double)rssi_val);
       sum += (float)rssi_val;  // adding ints to a float
       valid_count++;
     }
@@ -109,8 +109,8 @@ static void distance_averaging_task(void) {
     if (rc != ERROR_VAL) {
       dist_rc = rssi_to_dist(&dist, avg_rssi, m, b);
       if (!dist_rc) {
-        ESP_LOGI("CONVERSION", "RSSI Avg: %.2f  Distance (in): %.2f", avg_rssi,
-                 dist);
+        ESP_LOGI("CONVERSION", "RSSI Avg: %.2d  Distance (in): %.2f", 
+          (double)avg_rssi, (double)dist);
       } else {
         ESP_LOGW("CONVERSION", "Invalid Distance Conversion: M is 0");
       }
@@ -145,8 +145,8 @@ static void calibrate(void) {
                             RSSI_CALIB_TASK_DELAY_MS);
       if (rc != ERROR_VAL) {
         rssi_array[i] = avg_rssi;
-        ESP_LOGI("CALIBRATION", "Calibration mean[%d] = %.2f", i,
-                 rssi_array[i]);
+        ESP_LOGI("CALIBRATION", "Calibration mean[%i] = %.2f", i,
+                 (double)rssi_array[i]);
         i++;
       } else {
         ESP_LOGW("CALIBRATION", "No valid rssi values found, restarting round");

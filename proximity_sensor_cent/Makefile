@@ -1,7 +1,7 @@
 # Makefile
 
 compile:
-	./build-flash.sh
+	./build-script.sh
 
 flash: 
 	idf.py flash monitor
