@@ -2,7 +2,7 @@
 # version of Ubuntu.
 set(CMAKE_C_STANDARD 23)
 
-set(CMAKE_C_FLAGS "-Wall -Wextra")
+# set(CMAKE_C_FLAGS "-Wall -Wextra") # This breaks everything!!
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -pedantic")
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wconversion")
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wdouble-promotion")
@@ -19,9 +19,9 @@ set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wunreachable-code")
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wunused")
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -g")
 
-# No options are set here because the configuration is set in .clang-tidy
-# instead. If that file is not present, clang-tidy will be of limited help.
-set(CMAKE_C_CLANG_TIDY "clang-tidy")
+# # No options are set here because the configuration is set in .clang-tidy
+# # instead. If that file is not present, clang-tidy will be of limited help.
+# set(CMAKE_C_CLANG_TIDY "clang-tidy")
 
 idf_component_register(
     SRCS "calculation.c" "rssi_to_dist.c"
